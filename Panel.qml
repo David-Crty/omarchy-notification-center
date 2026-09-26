@@ -252,13 +252,53 @@ Panel {
     // itself ".*" would focus whichever window that hit first. Only something
     // shaped like a name gets through.
     if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(row.app)) return
-    // Chat apps rarely register an action and simply expect a click to bring
-    // their window up. This is the helper the notification service uses for
-    // the same fallback, so a click here lands where a click on the toast
-    // would have.
-    focusProc.command = [root.omarchyPath + "/bin/omarchy-hyprland-focus-app", row.app]
-    focusProc.running = true
+    // Slack gets one step more: the conversation the notification was about,
+    // looked up by `bin/slack-link`. Whatever it cannot place is focused like
+    // everything else, once its answer comes back.
+    if (clickAction === "Auto" && row.app.toLowerCase() === "slack") {
+      if (!slackLinkProc.running) {
+        slackLinkProc.app = row.app
+        slackLinkProc.command = [root.slackLinkScript, String(Math.round(row.timestamp))]
+        slackLinkProc.running = true
+      }
+      root.close()
+      return
+    }
+    focusApp(row.app)
     root.close()
+  }
+
+  // Chat apps rarely register an action and simply expect a click to bring
+  // their window up. This is the helper the notification service uses for the
+  // same fallback, so a click here lands where a click on the toast would have.
+  function focusApp(app) {
+    focusProc.command = [root.omarchyPath + "/bin/omarchy-hyprland-focus-app", app]
+    focusProc.running = true
+  }
+
+  // Out of the plugin directory rather than off PATH, like the store script,
+  // so it is the copy that shipped with this version of the plugin.
+  readonly property string slackLinkScript:
+    Qt.resolvedUrl("bin/slack-link").toString().replace(/^file:\/\//, "")
+
+  // The script only ever prints a slack://channel link built out of ids it
+  // has checked the shape of. The prefix is checked again here anyway, so
+  // nothing else it could print is ever handed to xdg-open.
+  Process {
+    id: slackLinkProc
+    property string app: ""
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var url = ""
+        try {
+          var data = JSON.parse(text)
+          if (data.ok === true) url = String(data.url || "")
+        } catch (e) {
+        }
+        root.focusApp(slackLinkProc.app)
+        if (url.indexOf("slack://channel?") === 0) Quickshell.execDetached(["xdg-open", url])
+      }
+    }
   }
 
   // ---------------------------------------------------------------- lifecycle

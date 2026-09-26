@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#
+# The Slack conversation an archived notification was about, as a slack:// link.
+#
+# A Slack notification names its conversation in the summary and nowhere else:
+# "[workspace] in some-channel", "[workspace] from Someone", in whatever
+# language Slack is set to. A name is no use to Slack's deep links, which take
+# ids and nothing but ids, and the click action that knew the id belonged to
+# the toast and was closed with it.
+#
+# Slack writes the ids down itself, though. Its desktop app logs every
+# notification it raises to its own log, with the message text redacted and the
+# workspace, conversation and message ids left in. The service stamps the same
+# notification a few milliseconds later, so the entry within a second of an
+# archived notification's timestamp is the one it came from. Nothing here reads
+# the summary, which is what keeps it working in every language and keeps a
+# sender-chosen string out of the link: every part of it is an id out of
+# Slack's own log, checked for shape before it is used.
+#
+# Slack rotates that log after a couple of weeks. Anything older than that, or
+# anything this cannot place, answers ok:false, and the panel focuses Slack the
+# way it always has.
+#
+# Usage: slack-link TIMESTAMP_MS
+
+set -uo pipefail
+
+no() {
+  printf '{"ok":false,"error":%s}\n' "$(printf '%s' "$1" | jq -Rs .)"
+  exit 1
+}
+
+command -v jq >/dev/null 2>&1 || no "jq is not installed"
+
+stamp=${1:-}
+[[ $stamp =~ ^[0-9]{12,14}$ ]] || no "needs a timestamp in milliseconds"
+
+# The native package, the snap and the Flatpak each keep Slack's profile
+# somewhere else. browser.log is the main process's log, the one that outlives
+# a reload of the web client.
+logs=()
+for root in \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/Slack" \
+  "$HOME/snap/slack/current/.config/Slack" \
+  "$HOME/.var/app/com.slack.Slack/config/Slack"; do
+  for f in "$root"/logs/*/browser*.log; do
+    [[ -f $f ]] && logs+=("$f")
+  done
+done
+(( ${#logs[@]} )) || no "no Slack log found"
+
+# The log stamps lines in local time to the millisecond and says nothing about
+# the zone, so the seconds either side of the notification are written out the
+# same way, and only entries in those three seconds are read at all.
+secs=$(( stamp / 1000 ))
+wanted=""
+for s in $(( secs - 1 )) "$secs" $(( secs + 1 )); do
+  wanted+="$(date -d "@$s" '+%m/%d/%y, %H:%M:%S')=$s|"
+done
+
+# One NEW_NOTIFICATION entry is a header line and a pretty-printed JSON object
+# that ends on a line of its own. Each one in the window comes out as its
+# distance from the notification in milliseconds, and the object on one line.
+best=$(awk -v wanted="$wanted" -v stamp="$stamp" '
+  BEGIN {
+    n = split(wanted, pairs, "|")
+    for (i = 1; i <= n; i++) if (split(pairs[i], kv, "=") == 2) epoch[kv[1]] = kv[2]
+  }
+  /^\[[0-9\/]+, [0-9:]+\] info: Store: NEW_NOTIFICATION/ {
+    sec = substr($0, 2, 18)
+    grab = (sec in epoch)
+    if (grab) { at = epoch[sec] * 1000 + substr($0, 21, 3); body = "" }
+    next
+  }
+  grab {
+    body = body $0
+    if ($0 == "}") {
+      d = at - stamp; if (d < 0) d = -d
+      if (d <= 1000) print d "\t" body
+      grab = 0
+    }
+  }
+' "${logs[@]}" 2>/dev/null | sort -n | head -n 1 | cut -f 2-)
+
+[[ -n $best ]] || no "not in Slack's log"
+
+# Enterprise Grid logs the organisation (E...) where a plain workspace logs its
+# team (T...); a deep link takes either. Conversations are C, D or G. Anything
+# else, a link is not built out of it.
+url=$(printf '%s' "$best" | jq -r '
+  select((.teamId | type) == "string" and (.teamId | test("^[TE][A-Z0-9]{2,20}$")))
+  | select((.channel | type) == "string" and (.channel | test("^[CDG][A-Z0-9]{2,20}$")))
+  | "slack://channel?team=\(.teamId)&id=\(.channel)"
+    + (if (.msg | type) == "string" and (.msg | test("^[0-9]{9,11}\\.[0-9]{6}$"))
+       then "&message=\(.msg)" else "" end)
+    + (if (.thread_ts | type) == "string" and (.thread_ts | test("^[0-9]{9,11}\\.[0-9]{6}$"))
+       then "&thread_ts=\(.thread_ts)" else "" end)
+' 2>/dev/null)
+
+[[ -n $url ]] || no "Slack's log entry has no usable ids"
+printf '{"ok":true,"url":%s}\n' "$(printf '%s' "$url" | jq -Rs .)"
