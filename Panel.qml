@@ -6,6 +6,7 @@ import qs.Commons
 import qs.Ui
 
 import "components"
+import "lib/SlackLink.js" as SlackLink
 
 // A notification center for Omarchy: everything you were sent, still there
 // when you go back for it.
@@ -253,14 +254,12 @@ Panel {
     // shaped like a name gets through.
     if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(row.app)) return
     // Slack gets one step more: the conversation the notification was about,
-    // looked up by `bin/slack-link`. Whatever it cannot place is focused like
-    // everything else, once its answer comes back.
+    // looked up in Slack's own log by lib/SlackLink.js. Whatever that cannot
+    // place is focused like everything else.
     if (clickAction === "Auto" && row.app.toLowerCase() === "slack") {
-      if (!slackLinkProc.running) {
-        slackLinkProc.app = row.app
-        slackLinkProc.command = [root.slackLinkScript, String(Math.round(row.timestamp))]
-        slackLinkProc.running = true
-      }
+      slackLog.app = row.app
+      slackLog.stamp = row.timestamp
+      slackLog.path = root.slackLogPath
       root.close()
       return
     }
@@ -276,29 +275,24 @@ Panel {
     focusProc.running = true
   }
 
-  // Out of the plugin directory rather than off PATH, like the store script,
-  // so it is the copy that shipped with this version of the plugin.
-  readonly property string slackLinkScript:
-    Qt.resolvedUrl("bin/slack-link").toString().replace(/^file:\/\//, "")
+  readonly property string slackLogPath:
+    (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config")
+    + "/Slack/logs/default/browser.log"
 
-  // The script only ever prints a slack://channel link built out of ids it
-  // has checked the shape of. The prefix is checked again here anyway, so
-  // nothing else it could print is ever handed to xdg-open.
-  Process {
-    id: slackLinkProc
+  // Read on click and let go straight after: the log runs to megabytes.
+  FileView {
+    id: slackLog
     property string app: ""
-    stdout: StdioCollector {
-      onStreamFinished: {
-        var url = ""
-        try {
-          var data = JSON.parse(text)
-          if (data.ok === true) url = String(data.url || "")
-        } catch (e) {
-        }
-        root.focusApp(slackLinkProc.app)
-        if (url.indexOf("slack://channel?") === 0) Quickshell.execDetached(["xdg-open", url])
-      }
-    }
+    property double stamp: 0
+    printErrors: false
+    onLoaded: root.openSlack(SlackLink.resolve(text(), stamp))
+    onLoadFailed: root.openSlack("")
+  }
+
+  function openSlack(url) {
+    slackLog.path = ""
+    focusApp(slackLog.app)
+    if (url !== "") Qt.openUrlExternally(url)
   }
 
   // ---------------------------------------------------------------- lifecycle

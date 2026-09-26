@@ -33,7 +33,8 @@ icon and all, and keeps it for 30 days.
   notification. A Slack card opens the conversation it was about, thread and
   all: Slack logs the ids of every notification it raises, and the one logged
   the moment this one arrived is the one it came from. Slack keeps that log for
-  a couple of weeks; past that, the card focuses Slack.
+  a couple of weeks; past that, or with the snap or Flatpak, the card focuses
+  Slack.
   It never runs the command the notification arrived with: that command is
   chosen by whoever sent the notification, so a stored one would be an
   attacker's command waiting for a click. Only an absolute path to an image is
@@ -106,6 +107,11 @@ The panel opens over IPC, which is how you bind it to a key:
 ```bash
 omarchy-shell jankeesvw.notification-center toggle
 ```
+
+## Tests
+
+The Slack matching has unit tests. Run them from the plugin directory with
+`node --test`.
 
 ## Licence
 
